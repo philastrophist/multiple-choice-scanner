@@ -1,9 +1,14 @@
+from string import ascii_uppercase
+
 from imutils.perspective import four_point_transform
 from imutils import contours
 import numpy as np
 import argparse
 import imutils
 import cv2
+
+
+ANSWERS = ascii_uppercase
 
 
 def find_centres(image):
@@ -84,8 +89,20 @@ def k_means(X, k, centers=None, num_iter=100):
         for i in range(k):
             msk = (cluster_assignments == i)
             centers[i] = np.mean(X[msk], axis=0) if np.any(msk) else centers[i]
-
     return cluster_assignments, centers
+
+
+def crop2contour(img, contour):
+    mask = np.zeros_like(img)  # Create mask where white is what we want, black otherwise
+    cv2.drawContours(mask, [contour], 0, 255, -1)  # Draw filled contour in mask
+    out = np.zeros_like(img)  # Extract out the object and place into output image
+    out[mask == 255] = img[mask == 255]
+    # Now crop
+    (y, x) = np.where(mask == 255)
+    (topy, topx) = (np.min(y), np.min(x))
+    (bottomy, bottomx) = (np.max(y), np.max(x))
+    out = out[topy:bottomy + 1, topx:bottomx + 1]
+    return out
 
 
 def build_detection_grid(centres, ncolumns, nsections):
@@ -113,9 +130,22 @@ def build_detection_grid(centres, ncolumns, nsections):
     return [i[1:] for i in d]
 
 
-def detect(image):
+def detect(image, xedges, yedges, confidence):
+    """
+    Given a detection grid, sum the image and return the highest scoring box
+    if the next highest score is within `confidence` of the highest, this is unreliable
+    returns answer, confidence, is_confident
+    """
     centres, masked = find_centres(image)
-    # cutout and sum
+    sum = np.histogram2d(masked, (xedges, yedges))
+    sum /= np.sum(sum, axis=1)
+    mx = np.max(sum, axis=1)
+    mx1 = np.max(np.where(sum != mx, sum), axis=1)
+    is_confident = mx1 / mx < confidence
+    return [ANSWERS[i] for i in np.argmax(sum, axis=1)], mx1 / mx, is_confident
+
+
+
 
 
 if __name__ == '__main__':
@@ -124,3 +154,4 @@ if __name__ == '__main__':
     # 3. read in student
     # 4. align grid
     # 3. find max bit per row/section, this is the answer
+

@@ -2,6 +2,8 @@
 # python test_grader.py --image images/test_01.png
 
 # import the necessary packages
+import sys
+
 from imutils.perspective import four_point_transform
 from imutils import contours
 import numpy as np
@@ -11,7 +13,7 @@ import cv2
 
 # construct the argument parse and parse the arguments
 ap = argparse.ArgumentParser()
-ap.add_argument("-i", "--image", required=True,
+ap.add_argument("-i", "--image", default='images/debug.png',
 	help="path to the input image")
 args = vars(ap.parse_args())
 
@@ -22,6 +24,7 @@ ANSWER_KEY = {0: 1, 1: 4, 2: 0, 3: 3, 4: 1}
 # load the image, convert it to grayscale, blur it
 # slightly, then find edges
 image = cv2.imread(args["image"])
+
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 edged = cv2.Canny(blurred, 75, 200)
@@ -57,6 +60,7 @@ if len(cnts) > 0:
 paper = four_point_transform(image, docCnt.reshape(4, 2))
 warped = four_point_transform(gray, docCnt.reshape(4, 2))
 
+
 # apply Otsu's thresholding method to binarize the warped
 # piece of paper
 thresh = cv2.threshold(warped, 0, 255,
@@ -79,11 +83,29 @@ for c in cnts:
 	# in order to label the contour as a question, region
 	# should be sufficiently wide, sufficiently tall, and
 	# have an aspect ratio approximately equal to 1
-	if w >= 20 and h >= 20 and ar >= 0.9 and ar <= 1.1:
+	if w >= 5 and h >= 5 and ar >= 0.7 and ar <= 1.3:
+		# mask = np.zeros(thresh.shape, dtype="uint8")
+		# cv2.drawContours(mask, [c], -1, 255, -1)
+		# cutout = np.zeros_like(thresh)  # Extract cutout the object and place into cutout image
+		# cutout[mask == 255] = thresh[mask == 255]
+		# (y, x) = np.where(mask == 255)
+		# (topy, topx) = (np.min(y), np.min(x))
+		# (bottomy, bottomx) = (np.max(y), np.max(x))
+		# cutout = cutout[topy:bottomy + 1, topx:bottomx + 1]
+		# if our approximated contour has four points,
+		# then we can assume we have found the paper
+		# if np.mean(cutout == 255) > 0.5:
 		questionCnts.append(c)
 
 # sort the question contours top-to-bottom, then initialize
 # the total number of correct answers
+import matplotlib.pyplot as plt
+for c in questionCnts:
+	cv2.drawContours(paper, [c], -1, 255, -1)
+cv2.imshow("Original", thresh)
+cv2.imshow("Exam", paper)
+cv2.waitKey(0)
+
 questionCnts = contours.sort_contours(questionCnts,
 	method="top-to-bottom")[0]
 correct = 0

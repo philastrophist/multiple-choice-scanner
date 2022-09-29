@@ -76,7 +76,7 @@ def find_centres(image):
         cY = int(M["m01"] / M["m00"])
         centres.append((cX, cY))
     centres.sort(key=lambda x: x[1])
-    return np.array(centres), paper
+    return np.array(centres), paper, thresh
 
 
 def k_means(X, k, centers=None, num_iter=100):
@@ -145,6 +145,17 @@ def detect(image, xedges, yedges, confidence):
     return [ANSWERS[i] for i in np.argmax(sum, axis=1)], mx1 / mx, is_confident
 
 
+def show_webcam(mirror=False):
+    cam = cv2.VideoCapture(0)
+    while True:
+        ret_val, img = cam.read()
+        if mirror:
+            img = cv2.flip(img, 1)
+        cv2.imshow('my webcam', img)
+        if cv2.waitKey(1) == 27:
+            break  # esc to quit
+    cam.release()
+    cv2.destroyAllWindows()
 
 
 
@@ -155,3 +166,21 @@ if __name__ == '__main__':
     # 4. align grid
     # 3. find max bit per row/section, this is the answer
 
+    """
+    calibrate:
+        read blank 🗸
+        cutout paper 🗸
+        user highlights box area and labels q and a labels ❌
+        user highlights crewcode area ❌
+        make grid
+    video loop: 🗸
+        read in 🗸
+        cutout paper 🗸
+        if alignment % > 15: ❌
+            align to calibration 🗸
+            for each grid of q/a:
+                detect box with confidence🗸
+            read crew code ❌
+            break
+    report & save to csv with cutout and highlight ❌
+    """

@@ -1,10 +1,16 @@
+from collections import Counter
 from functools import partial
 from math import floor
 
 import cv2
+import imutils
 import numpy as np
+from imutils.perspective import four_point_transform
 from matplotlib import pyplot as plt
+from scipy.spatial.distance import cdist
+from sklearn.mixture import GaussianMixture
 
+from feature_alignment import align_images
 from mark import k_means
 
 # bgr
@@ -15,7 +21,7 @@ BLUE = (255, 191, 0)
 YELLOW = (0, 255, 255)
 
 
-def ResizeWithAspectRatio(image, width=None, height=None, inter=cv2.INTER_AREA):
+def resize_with_aspect_ratio(image, width=None, height=None, inter=cv2.INTER_AREA):
     dim = None
     (h, w) = image.shape[:2]
 
@@ -31,49 +37,88 @@ def ResizeWithAspectRatio(image, width=None, height=None, inter=cv2.INTER_AREA):
     return cv2.resize(image, dim, interpolation=inter)
 
 
-def show_image(name, img, colorspace=cv2.COLOR_GRAY2RGB):
-    resize = ResizeWithAspectRatio(img, width=1280)
+def show_image(name, img, width=800, colorspace=cv2.COLOR_GRAY2RGB):
+    resize = resize_with_aspect_ratio(img, width=width)
     cv2.imshow(name, resize)
     cv2.waitKey(0)
 
 
-image = cv2.imread("images/corrections/Initial 2 - A-1 - marked.jpg")
+def coordinate_image():
+    """
+    Find features to identify whether this is a double sided image and what page.
 
-# image += np.random.normal(0, 0.2, size=image.shape).astype(image.dtype)
-gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-canny = cv2.Canny(blurred, 120, 255, 1)
-
-# Find contours
-cnts = cv2.findContours(canny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-cnts = cnts[0] if len(cnts) == 2 else cnts[1]
-
-# Iterate thorugh contours and draw rectangles around contours
-expected_area_fraction = 0.00018  # area is 700 for a4
-threshold_area_fraction = 1.3e-06 # 5 for a4
-
-size = np.prod(image.shape[:-1])
-expected_area = expected_area_fraction * size
-threshold = threshold_area_fraction * size
-
-grid = []
-for c in cnts:
-    r = cv2.boundingRect(c)
-    x, y, w, h = r
-    area = w * h
-    if (area > expected_area - threshold) & (area < expected_area + threshold):
-        grid.append(r)
+    """
 
 
-# fill missing grid elements
-    # make grid with extremes of (x,y) detections
-    # transform grid with translation and rotations to get nearest to all points
+def warp_perspective(edged, *images):
+    cnts = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL,
+                            cv2.CHAIN_APPROX_SIMPLE)
+    cnts = imutils.grab_contours(cnts)
+    docCnt = None
 
+    # ensure that at least one contour was found
+    if len(cnts) > 0:
+        # sort the contours according to their size in
+        # descending order
+        cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+
+        # loop over the sorted contours
+        for c in cnts:
+            # approximate the contour
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+
+            # if our approximated contour has four points,
+            # then we can assume we have found the paper
+            if len(approx) == 4:
+                docCnt = approx
+                break
+    # apply a four point perspective transform to both the
+    # original image and grayscale image to obtain a top-down
+    # birds eye view of the paper
+    results = [four_point_transform(image, docCnt.reshape(4, 2)) for image in images]
+    if len(results) == 1:
+        return  results[0]
+    return results
+
+def get_grid(image, expected_ratio=1.208):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    canny = cv2.Canny(blurred, 120, 255, 1)
+    min_fill = np.percentile(canny, 1)
+
+    # Find contours
+    cnts = cv2.findContours(canny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+
+    # Iterate thorugh contours and draw rectangles around contours
+      # area is 700 for a4
+     # 5 for a4
+    ratios = []
+    grid = []
+    i = 0
+    for c in cnts:
+        r = cv2.boundingRect(c)
+        x, y, w, h = r
+        buff = 1
+        min_ratio = (h - buff) / (w + buff)
+        max_ratio = (h + buff) / max([w - buff, 1])
+        if (expected_ratio <= max_ratio) & (expected_ratio >= min_ratio):
+            inner_half = shrink_box(r, 0.5)
+            if np.prod(inner_half[-2:]) > 1:
+                if (cutout_box(canny, inner_half) > min_fill).mean() < 0.01:
+                    grid.append(r)
+                    ratios.append((min_ratio, max_ratio))
+                    cv2.rectangle(image, (x, y), (x + w, y + h), RED, 2)
+                    cv2.putText(image, str(i), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1., RED)
+                    i += 1
+    show_image('im', image)
+    return np.asarray(grid)
 
 
 def split_sections(grid, buffer=3):
     points = grid[:, :-2]
-    for nsections in [1] + list(range(2, 8, 2)):
+    for nsections in [1] + list(range(2, 8, 1)):
         for nx in range(1, nsections+1):
             for ny in range(1, nsections+1):
                 if nx * ny != nsections:
@@ -180,7 +225,12 @@ def shrink_box(box, fraction=1.):
 
 
 def order_sections(sections):
-    return sections
+    """
+    Sort sections (nquestions, nanswers, (x, y, w, h)) by min((x,y)) so top to bottom, left to right
+    """
+    centroids = np.array([s.min(axis=(0, 1))[[0, 1]] for s in sections])
+    sorti = np.lexsort((centroids[:, 0], centroids[:, 1]))
+    return [sections[i] for i in sorti]
 
 
 def cutout_box(image, box):
@@ -235,7 +285,7 @@ def mark_section(binary_image, section, mistake_threshold=0.8, blank_threshold=0
     return np.asarray(answers), np.asarray(valids)
 
 
-def present_section(image, section_boxes, student_answers, valid, correct_answers=None):
+def present_section(image, section_boxes, student_answers, valid, correct_answers=None, highlight_empty=False):
     if correct_answers is None:
         correct_answers = student_answers
     for r, (boxes, student, valid, correct) in enumerate(zip(section_boxes, student_answers, valid, correct_answers)):
@@ -247,38 +297,99 @@ def present_section(image, section_boxes, student_answers, valid, correct_answer
                 colour = GREEN
             elif student == c:
                 colour = RED
+            elif highlight_empty:
+                colour = BLUE
             else:
                 continue
             cv2.rectangle(image, (x, y), (x + w, y + h), colour, 2)
 
 
+def cluster_boxes(grid, nclusters):
+    """
+    Gaussian mixture clustering in space of (nearest 3 neighbours, width, height)
+    Scenarios:
+        1. 1 spike for the grid, large scatter for others
+        2. large scatter encompassing grid and others, 1 spike for others
+    Winning scenario: the most populated is a spike containing only grid boxes
+    Keep increasing
+    """
+    dist_matrix = cdist(grid[:, :2], grid[:, :2])
+    nearest = np.sort(dist_matrix, axis=1)[:, 1:4]
+    nearest /= nearest[:, :1]  # make it relative, first col will be 1.
+    features = np.append(nearest[:, 1:], grid[:, 2:], axis=1)
+    gm = GaussianMixture(n_components=nclusters, random_state=0).fit(features)
+    return gm.predict(features)
 
 
-grid = np.asarray(grid)
-print(grid.shape)
-sections = split_sections(grid)
-print(len(sections))
+def extract_sections(image):
+    """
+    Cluster the boxes with similar boxes
+    Try to make consistent grid sections out of them
+    Choose the most populated cluster label if there are multiple valid ones
+    Use the least clusters as possible
+    """
+    grid = get_grid(image)
+    for i in range(1, 5):
+        labels = cluster_boxes(grid, i)
+        valid_sections = []
+        for l in range(i):
+            try:
+                sections = split_sections(grid[labels == l])
+                valid_sections.append((sections, sum(labels == l)))
+            except ValueError:
+                pass
+        if valid_sections:
+            sections = max(valid_sections, key=lambda x: x[1])[0]
+            sections = list(map(order_grid, sections))
+            sections = order_sections(sections)
+            return sections
+    raise ValueError(f"Unable to parse grid")
 
-sections = list(map(order_grid, sections))
-sections = order_sections(sections)
+def mark_image(sections, pass_perc, image, name, highlight_empty=False):
+    score = 0
+    number = 0
+    invalids = 0
+    correct_answer_array = np.asarray([[0] * len(s) for s in sections])
 
-pass_perc = 0.8
-score = 0
-number = 0
-invalids = 0
-correct_answer_array = np.asarray([[0] * len(s) for s in sections])
+    for section, correct_answers in zip(sections, correct_answer_array):
+        answers, valids = mark_section(binary_image(image), section)
+        score += sum(answers == correct_answers)
+        invalids += sum(~valids)
+        number += len(answers)
+        present_section(image, section, answers, valids, correct_answers, highlight_empty)
+    passed = score / number >= pass_perc
+    str_passed = 'PASS' if passed else 'FAIL'
+    colour = GREEN if passed else RED
 
-for section, correct_answers in zip(sections, correct_answer_array):
-    answers, valids = mark_section(binary_image(image), section)
-    score += sum(answers == correct_answers)
-    invalids += sum(~valids)
-    number += len(answers)
-    present_section(image, section, answers, valids, correct_answers)
-passed = score / number >= pass_perc
-str_passed = 'PASS' if passed else 'FAIL'
-colour = GREEN if passed else RED
+    image = cv2.putText(image, f'{score:.0f} / {number:.0f} = {score / number:.1%} ({str_passed})', tuple(np.min(sections[0], axis=(0, 1))[:2]),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1., colour)
+    show_image(name, image)
 
-image = cv2.putText(image, f'{score:.0f} / {number:.0f} = {score / number:.1%} ({str_passed})', tuple(np.min(sections[0], axis=(0, 1))[:2]),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1., colour)
-show_image('image', image)
-cv2.waitKey(0)
+
+if __name__ == '__main__':
+    answer_image = cv2.imread("images/test-answer.jpeg")
+    calibration_image = cv2.imread("images/corrections/Initial 2 - A-1.jpg")
+    student_image = cv2.imread("images/corrections/Initial 2 - A-1 - marked.jpg")
+    # calibration_image = resize_with_aspect_ratio(calibration_image[:, calibration_image.shape[1]//2:], answer_image.shape[1])
+    # student_image = resize_with_aspect_ratio(student_image[:, student_image.shape[1]//2:], answer_image.shape[1])
+
+    sections = extract_sections(calibration_image)
+    mark_image(sections, 0.8, calibration_image, 'marked', highlight_empty=True)
+
+
+    # take calibration pdf
+    # 4-point transform paper
+    # attempt to align double-sided
+    # attempt to align single-sided
+    # read grid
+
+    gray = cv2.cvtColor(answer_image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    canny = cv2.Canny(blurred, 120, 255, 1)
+    answer_image = warp_perspective(canny, answer_image)
+
+    mark_image(sections, 0.8, student_image, 'marked')
+
+    # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    # canny = cv2.Canny(blurred, 120, 255, 1)

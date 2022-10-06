@@ -7,13 +7,12 @@ MAX_FEATURES = 500
 GOOD_MATCH_PERCENT = 0.15
 
 
-def alignImages(im1, im2):
+def align_images(im1, im2):
+  """
+  Align im1 to im2
+  """
   im1Gray = find_centres(im1)[-1]
   im2Gray = find_centres(im2)[-1]
-
-  cv2.imshow("paper", im1Gray)
-  cv2.imshow("reference", im2Gray)
-  cv2.waitKey(0)
 
   # Convert images to grayscale
   # im1Gray = cv2.cvtColor(im1, cv2.COLOR_BGR2GRAY)
@@ -37,7 +36,6 @@ def alignImages(im1, im2):
 
   # Draw top matches
   imMatches = cv2.drawMatches(im1, keypoints1, im2, keypoints2, matches, None)
-  cv2.imwrite("matches.jpg", imMatches)
 
   # Extract location of good matches
   points1 = np.zeros((len(matches), 2), dtype=np.float32)
@@ -71,7 +69,7 @@ if __name__ == '__main__':
   print("Aligning images ...")
   # Registered image will be resotred in imReg.
   # The estimated homography will be stored in h.
-  imReg, h, imRef = alignImages(im, imReference)
+  imReg, h, imRef = align_images(im, imReference)
 
   # Write aligned image to disk.
   outFilename = "aligned.jpg"

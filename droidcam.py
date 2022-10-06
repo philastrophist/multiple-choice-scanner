@@ -3,7 +3,7 @@ from imutils.perspective import four_point_transform
 import numpy as np
 import cv2
 
-cap = cv2.VideoCapture('http://192.168.0.27:4747/video?1280x720')
+cap = cv2.VideoCapture('http://192.168.0.13:4747/video?1280x720')
 
 while(True):
     ret, image = cap.read()
@@ -35,15 +35,15 @@ while(True):
             # then we can assume we have found the paper
             if len(approx) == 4:
                 docCnt = approx
+                # apply a four point perspective transform to both the
+                # original image and grayscale image to obtain a top-down
+                # birds eye view of the paper
+                paper = four_point_transform(image, docCnt.reshape(4, 2))
+                warped = four_point_transform(gray, docCnt.reshape(4, 2))
+                cv2.imshow('detect', warped)
                 break
     if docCnt is None:
         continue
-    # apply a four point perspective transform to both the
-    # original image and grayscale image to obtain a top-down
-    # birds eye view of the paper
-    paper = four_point_transform(image, docCnt.reshape(4, 2))
-    warped = four_point_transform(gray, docCnt.reshape(4, 2))
-    cv2.imshow('detect', warped)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 

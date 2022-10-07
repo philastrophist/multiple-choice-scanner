@@ -37,10 +37,11 @@ def resize_with_aspect_ratio(image, width=None, height=None, inter=cv2.INTER_ARE
     return cv2.resize(image, dim, interpolation=inter)
 
 
-def show_image(name, img, width=800, colorspace=cv2.COLOR_GRAY2RGB):
+def show_image(name, img, width=800, colorspace=cv2.COLOR_GRAY2RGB, wait=True):
     resize = resize_with_aspect_ratio(img, width=width)
     cv2.imshow(name, resize)
-    cv2.waitKey(0)
+    if wait:
+        cv2.waitKey(0)
 
 
 def coordinate_image():
@@ -109,10 +110,10 @@ def get_grid(image, expected_ratio=1.208):
                 if (cutout_box(canny, inner_half) > min_fill).mean() < 0.01:
                     grid.append(r)
                     ratios.append((min_ratio, max_ratio))
-                    cv2.rectangle(image, (x, y), (x + w, y + h), RED, 2)
-                    cv2.putText(image, str(i), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1., RED)
+                    # cv2.rectangle(image, (x, y), (x + w, y + h), RED, 2)
+                    # cv2.putText(image, str(i), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1., RED)
                     i += 1
-    show_image('im', image)
+    # show_image('im', image)
     return np.asarray(grid)
 
 
@@ -237,12 +238,12 @@ def cutout_box(image, box):
     x, y, w, h = box
     return image[y:y+h, x:x+w]
 
-def measure_box(image, box, shrink=0.5):
+def measure_box(image, box, shrink=1.):
     box = shrink_box(box, shrink)
     return 1 - (cutout_box(image, box).mean() / 255)
 
 
-def decide_row(binary_image, row, mistake_threshold=0.8, blank_threshold=0.1):
+def decide_row(binary_image, row, mistake_threshold=0.8, blank_threshold=0.1, shrink=1.):
     """
     Mixtures of ⬛, ☐, ☒
         ⬛: mistake - ignore
@@ -261,7 +262,7 @@ def decide_row(binary_image, row, mistake_threshold=0.8, blank_threshold=0.1):
         blank = <10%
         select = in between
     """
-    intensities = np.asarray(list(map(partial(measure_box, binary_image), row)))
+    intensities = np.asarray(list(map(partial(measure_box, binary_image, shrink=shrink), row)))
     mistake = intensities > mistake_threshold
     blank = intensities < blank_threshold
     selected = ~mistake & ~blank
@@ -277,15 +278,17 @@ def decide_row(binary_image, row, mistake_threshold=0.8, blank_threshold=0.1):
     return i, valid
 
 def binary_image(img):
-    _, img_bin = cv2.threshold(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    return img_bin
+    if img.ndim == 3:
+        _, img_bin = cv2.threshold(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        return img_bin
+    return img
 
-def mark_section(binary_image, section, mistake_threshold=0.8, blank_threshold=0.1):
-    answers, valids = zip(*[decide_row(binary_image, row, mistake_threshold, blank_threshold) for row in section])
+def mark_section(binary_image, section, mistake_threshold=0.8, blank_threshold=0.1, shrink=1.):
+    answers, valids = zip(*[decide_row(binary_image, row, mistake_threshold, blank_threshold, shrink) for row in section])
     return np.asarray(answers), np.asarray(valids)
 
 
-def present_section(image, section_boxes, student_answers, valid, correct_answers=None, highlight_empty=False):
+def present_section(image, section_boxes, student_answers, valid, correct_answers=None, highlight_empty=False, shrink=1.):
     if correct_answers is None:
         correct_answers = student_answers
     for r, (boxes, student, valid, correct) in enumerate(zip(section_boxes, student_answers, valid, correct_answers)):
@@ -301,6 +304,7 @@ def present_section(image, section_boxes, student_answers, valid, correct_answer
                 colour = BLUE
             else:
                 continue
+            x, y, w, h = shrink_box(box, shrink)
             cv2.rectangle(image, (x, y), (x + w, y + h), colour, 2)
 
 
@@ -345,36 +349,54 @@ def extract_sections(image):
             return sections
     raise ValueError(f"Unable to parse grid")
 
-def mark_image(sections, pass_perc, image, name, highlight_empty=False):
+def mark_image(sections, pass_perc, image, highlight_empty=False):
     score = 0
     number = 0
     invalids = 0
     correct_answer_array = np.asarray([[0] * len(s) for s in sections])
 
     for section, correct_answers in zip(sections, correct_answer_array):
-        answers, valids = mark_section(binary_image(image), section)
+        answers, valids = mark_section(binary_image(image), section, shrink=1.5)
         score += sum(answers == correct_answers)
         invalids += sum(~valids)
         number += len(answers)
-        present_section(image, section, answers, valids, correct_answers, highlight_empty)
+        present_section(image, section, answers, valids, correct_answers, highlight_empty, shrink=1.5)
     passed = score / number >= pass_perc
     str_passed = 'PASS' if passed else 'FAIL'
     colour = GREEN if passed else RED
-
     image = cv2.putText(image, f'{score:.0f} / {number:.0f} = {score / number:.1%} ({str_passed})', tuple(np.min(sections[0], axis=(0, 1))[:2]),
                         cv2.FONT_HERSHEY_SIMPLEX, 1., colour)
-    show_image(name, image)
+
+
+def overlay_images(a, b):
+    return cv2.addWeighted(a, 0.5, b, 0.5, 0)
 
 
 if __name__ == '__main__':
     answer_image = cv2.imread("images/test-answer.jpeg")
     calibration_image = cv2.imread("images/corrections/Initial 2 - A-1.jpg")
     student_image = cv2.imread("images/corrections/Initial 2 - A-1 - marked.jpg")
-    # calibration_image = resize_with_aspect_ratio(calibration_image[:, calibration_image.shape[1]//2:], answer_image.shape[1])
-    # student_image = resize_with_aspect_ratio(student_image[:, student_image.shape[1]//2:], answer_image.shape[1])
+    calibration_image = resize_with_aspect_ratio(calibration_image[:, calibration_image.shape[1]//2:], answer_image.shape[1])
+    student_image = resize_with_aspect_ratio(student_image[:, student_image.shape[1]//2:], answer_image.shape[1])
+    gray = cv2.cvtColor(answer_image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    canny = cv2.Canny(blurred, 120, 255, 1)
+    answer_image = warp_perspective(canny, answer_image)
+
 
     sections = extract_sections(calibration_image)
-    mark_image(sections, 0.8, calibration_image, 'marked', highlight_empty=True)
+    mask = np.zeros_like(calibration_image)
+    for section in sections:
+        x0, y0 = section.min(axis=(0, 1))[:2]
+        x1, y1 = section.max(axis=(0, 1))[:2] + section.max(axis=(0, 1))[2:]
+        calibration_image[y0-1:y1+1, x0-1:x1+1] = 255
+    h, (answer_image, calibration_image) = align_images(binary_image(answer_image), binary_image(calibration_image), answer_image, calibration_image, good_match_fraction=0.5)
+    mark_image(sections, 0.8, answer_image, highlight_empty=False)
+    show_image('answer', answer_image, wait=False)
+    overlay = overlay_images(answer_image, calibration_image)
+    show_image('overlay', overlay)
+    # show_image('cal', calibration_image)
+
 
 
     # take calibration pdf
@@ -383,12 +405,9 @@ if __name__ == '__main__':
     # attempt to align single-sided
     # read grid
 
-    gray = cv2.cvtColor(answer_image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-    canny = cv2.Canny(blurred, 120, 255, 1)
-    answer_image = warp_perspective(canny, answer_image)
 
-    mark_image(sections, 0.8, student_image, 'marked')
+    #
+    # mark_image(sections, 0.8, student_image, 'marked')
 
     # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     # blurred = cv2.GaussianBlur(gray, (3, 3), 0)

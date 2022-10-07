@@ -3,25 +3,24 @@ import cv2
 import numpy as np
 from mark import find_centres
 
-MAX_FEATURES = 500
-GOOD_MATCH_PERCENT = 0.15
 
 
-def align_images(im1, im2):
+def align_images(im1, im2, *args, good_match_fraction=0.15, max_features=500):
   """
   Align im1 to im2
   """
-  im1Gray = find_centres(im1)[-1]
-  im2Gray = find_centres(im2)[-1]
+
+  # im1Gray = find_centres(im1)[-1]
+  # im2Gray = find_centres(im2)[-1]
 
   # Convert images to grayscale
   # im1Gray = cv2.cvtColor(im1, cv2.COLOR_BGR2GRAY)
   # im2Gray = cv2.cvtColor(im2, cv2.COLOR_BGR2GRAY)
 
   # Detect ORB features and compute descriptors.
-  orb = cv2.ORB_create(MAX_FEATURES)
-  keypoints1, descriptors1 = orb.detectAndCompute(im1Gray, None)
-  keypoints2, descriptors2 = orb.detectAndCompute(im2Gray, None)
+  orb = cv2.ORB_create(max_features)
+  keypoints1, descriptors1 = orb.detectAndCompute(im1, None)
+  keypoints2, descriptors2 = orb.detectAndCompute(im2, None)
 
   # Match features.
   matcher = cv2.DescriptorMatcher_create(cv2.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
@@ -31,7 +30,7 @@ def align_images(im1, im2):
   matches.sort(key=lambda x: x.distance, reverse=False)
 
   # Remove not so good matches
-  numGoodMatches = int(len(matches) * GOOD_MATCH_PERCENT)
+  numGoodMatches = int(len(matches) * good_match_fraction)
   matches = matches[:numGoodMatches]
 
   # Draw top matches
@@ -49,10 +48,9 @@ def align_images(im1, im2):
   h, mask = cv2.findHomography(points1, points2, cv2.RANSAC)
 
   # Use homography
-  height, width = im2Gray.shape
-  im1Reg = cv2.warpPerspective(im1Gray, h, (width, height))
-
-  return im1Reg, h, im2Gray
+  height, width = im2.shape
+  imRegs = [cv2.warpPerspective(i, h, (width, height)) for i in args]
+  return h, imRegs
 
 if __name__ == '__main__':
 

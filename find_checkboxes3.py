@@ -1,5 +1,6 @@
 from collections import Counter
-from functools import partial
+from functools import partial, reduce
+from itertools import combinations
 from math import floor
 
 import cv2
@@ -8,6 +9,8 @@ import numpy as np
 from imutils.perspective import four_point_transform
 from matplotlib import pyplot as plt
 from scipy.spatial.distance import cdist
+from sklearn.cluster import BisectingKMeans, KMeans
+from sklearn.metrics import silhouette_score
 from sklearn.mixture import GaussianMixture
 
 from feature_alignment import align_images
@@ -229,6 +232,7 @@ def order_sections(sections):
     """
     Sort sections (nquestions, nanswers, (x, y, w, h)) by min((x,y)) so top to bottom, left to right
     """
+    sections = [s for s in sections if len(s)]
     centroids = np.array([s.min(axis=(0, 1))[[0, 1]] for s in sections])
     sorti = np.lexsort((centroids[:, 0], centroids[:, 1]))
     return [sections[i] for i in sorti]
@@ -322,7 +326,43 @@ def cluster_boxes(grid, nclusters):
     nearest /= nearest[:, :1]  # make it relative, first col will be 1.
     features = np.append(nearest[:, 1:], grid[:, 2:], axis=1)
     gm = GaussianMixture(n_components=nclusters, random_state=0).fit(features)
-    return gm.predict(features)
+    predict = gm.predict(features)
+    return predict, np.linalg.det(gm.covariances_), np.array([sum(predict == i) for i in range(nclusters)])
+
+
+def test_separate(grid1, grid2):
+    """
+    find 3 shortest distances in each grid (should be horizontal, vertical, and diagonal)
+    find shortest distance between grids
+    if the maximum intra-grid distance is smaller than the minimum inter-grid distance, then they are separate
+    """
+    intra = np.max(np.median(np.sort(cdist(grid1[:, :2], grid1[:, :2]), axis=1)[:, 1:4], axis=0)) * 1.5
+    inter = np.min(cdist(grid1[:, :2], grid2[:, :2]))
+    return inter > intra
+
+
+def test_consistent(grid):
+    km = KMeans(n_clusters=2, random_state=0).fit(grid[:, :2])
+    grid1, grid2 = grid[km.labels_ == 0], grid[km.labels_ == 1]
+    plt.scatter(*grid1[:, :2].T)
+    plt.scatter(*grid2[:, :2].T)
+    plt.show()
+    return not test_separate(grid1, grid2)
+
+
+def break_into_sections(X):
+    sections = [X]
+    for nsections in range(2, 8):
+        km = KMeans(n_clusters=nsections, random_state=0).fit(X[:, :2])
+        _sections = [X[km.labels_ == i] for i in range(nsections)]
+        is_valid = all(map(lambda x: test_separate(*x), combinations(_sections, 2))) and all(map(test_consistent, _sections))
+        if is_valid:
+            sections = _sections
+        else:
+            sections = list(map(order_grid, sections))
+            sections = order_sections(sections)
+            return sections
+    raise ValueError(f"Cannot parse sections")
 
 
 def extract_sections(image):
@@ -333,34 +373,33 @@ def extract_sections(image):
     Use the least clusters as possible
     """
     grid = get_grid(image)
-    for i in range(1, 5):
-        labels = cluster_boxes(grid, i)
-        valid_sections = []
-        for l in range(i):
+    for nclusters in range(1, 5):
+        labels, dets, ns = cluster_boxes(grid, nclusters)
+        sections = []
+        for cluster, occupancy in enumerate(ns):
+            if occupancy < 4:
+                continue
             try:
-                sections = split_sections(grid[labels == l])
-                valid_sections.append((sections, sum(labels == l)))
+                _sections = break_into_sections(grid[labels == cluster])
+                sections.append((occupancy, _sections))
             except ValueError:
-                pass
-        if valid_sections:
-            sections = max(valid_sections, key=lambda x: x[1])[0]
-            sections = list(map(order_grid, sections))
-            sections = order_sections(sections)
-            return sections
+                continue
+        return max(sections, key=lambda x: x[0])[1]
     raise ValueError(f"Unable to parse grid")
 
-def mark_image(sections, pass_perc, image, highlight_empty=False):
+
+def mark_image(sections, pass_perc, image, highlight_empty=False, shrink=0.5):
     score = 0
     number = 0
     invalids = 0
-    correct_answer_array = np.asarray([[0] * len(s) for s in sections])
+    correct_answer_array = [[0] * len(s) for s in sections]
 
     for section, correct_answers in zip(sections, correct_answer_array):
-        answers, valids = mark_section(binary_image(image), section, shrink=1.5)
+        answers, valids = mark_section(binary_image(image), section, shrink=shrink)
         score += sum(answers == correct_answers)
         invalids += sum(~valids)
         number += len(answers)
-        present_section(image, section, answers, valids, correct_answers, highlight_empty, shrink=1.5)
+        present_section(image, section, answers, valids, correct_answers, highlight_empty, shrink=shrink)
     passed = score / number >= pass_perc
     str_passed = 'PASS' if passed else 'FAIL'
     colour = GREEN if passed else RED
@@ -383,8 +422,8 @@ if __name__ == '__main__':
     canny = cv2.Canny(blurred, 120, 255, 1)
     answer_image = warp_perspective(canny, answer_image)
 
-
     sections = extract_sections(calibration_image)
+
     mask = np.zeros_like(calibration_image)
     for section in sections:
         x0, y0 = section.min(axis=(0, 1))[:2]
@@ -392,9 +431,9 @@ if __name__ == '__main__':
         calibration_image[y0-1:y1+1, x0-1:x1+1] = 255
     h, (answer_image, calibration_image) = align_images(binary_image(answer_image), binary_image(calibration_image), answer_image, calibration_image, good_match_fraction=0.5)
     mark_image(sections, 0.8, answer_image, highlight_empty=False)
-    show_image('answer', answer_image, wait=False)
-    overlay = overlay_images(answer_image, calibration_image)
-    show_image('overlay', overlay)
+    show_image('answer', answer_image, wait=True)
+    # overlay = overlay_images(answer_image, calibration_image)
+    # show_image('overlay', overlay)
     # show_image('cal', calibration_image)
 
 

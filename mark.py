@@ -79,9 +79,10 @@ def find_centres(image):
     return np.array(centres), paper, thresh
 
 
-def k_means(X, k, centers=None, num_iter=100):
+def k_means(X, k, centers=None, num_iter=100, seed=9):
+    state = np.random.RandomState(seed)
     if centers is None:
-        rnd_centers_idx = np.random.choice(np.arange(X.shape[0]), k, replace=False)
+        rnd_centers_idx = state.choice(np.arange(X.shape[0]), k, replace=False)
         centers = X[rnd_centers_idx]
     for _ in range(num_iter):
         distances = np.sum(np.sqrt((X - centers[:, np.newaxis]) ** 2), axis=-1)

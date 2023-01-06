@@ -85,7 +85,7 @@ def warp_perspective(edged, *images):
         return  results[0]
     return results
 
-def get_grid(image, expected_ratio=1.208):
+def get_grid(image, expected_ratio=None):  # expected_ratio=used to be 1.208
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     canny = cv2.Canny(blurred, 120, 255, 1)
@@ -98,21 +98,23 @@ def get_grid(image, expected_ratio=1.208):
     # Iterate thorugh contours and draw rectangles around contours
       # area is 700 for a4
      # 5 for a4
-    ratios = []
     grid = []
     i = 0
     for c in cnts:
         r = cv2.boundingRect(c)
         x, y, w, h = r
-        buff = 1
-        min_ratio = (h - buff) / (w + buff)
-        max_ratio = (h + buff) / max([w - buff, 1])
-        if (expected_ratio <= max_ratio) & (expected_ratio >= min_ratio):
+        if expected_ratio is not None:
+            buff = 1
+            min_ratio = (h - buff) / (w + buff)
+            max_ratio = (h + buff) / max([w - buff, 1])
+            correct_size = (expected_ratio <= max_ratio) & (expected_ratio >= min_ratio)
+        else:
+            correct_size = True
+        if correct_size:
             inner_half = shrink_box(r, 0.5)
             if np.prod(inner_half[-2:]) > 1:
                 if (cutout_box(canny, inner_half) > min_fill).mean() < 0.01:
                     grid.append(r)
-                    ratios.append((min_ratio, max_ratio))
                     # cv2.rectangle(image, (x, y), (x + w, y + h), RED, 2)
                     # cv2.putText(image, str(i), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1., RED)
                     i += 1
